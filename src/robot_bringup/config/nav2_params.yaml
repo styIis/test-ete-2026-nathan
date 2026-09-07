@@ -1,0 +1,409 @@
+# =============================================================
+#  nav2_params.yaml  --  Robot IUT GEII (base differentielle)
+#  A placer dans : ~/ros2_ws/src/robot_bringup/config/
+# -------------------------------------------------------------
+#  CONTEXTE MATERIEL (mesure le 22/08/2026, prototype sur alim de banc)
+#    Chassis           : 300 x 250 x 100 mm (160 mm avec LiDAR/Nucleo)
+#    Entraxe roues     : 0.23 m
+#    Rayon roue        : 0.025 m
+#    Rayon circonscrit : sqrt(0.15^2 + 0.125^2) = 0.195 m -> arrondi 0.20
+#
+#  VITESSES : valeurs volontairement conservatrices.
+#    Validees en translation jusqu'a 0.25 m/s commande (0.215 mesure).
+#    0.30 m/s NON TESTE : longueur de cable insuffisante.
+#    Rotation NON MESUREE : les cables s'enroulent avant la fin de l'essai.
+#    max_vel_theta est donc CALCULE, pas mesure :
+#      v_roue = omega * entraxe/2 = 1.0 * 0.115 = 0.115 m/s  -> dans le
+#      domaine valide en translation.
+#    A REVALIDER une fois le robot sur batterie (rentree IUT).
+#
+#  RESOLUTION DE MESURE : 55 ticks/tour en decodage x1 => la vitesse
+#    mesuree est quantifiee par pas de 0.0152 m/s. min_vel_x doit rester
+#    nettement au-dessus, sinon le PID regule sur du bruit.
+# =============================================================
+
+# -------------------------------------------------------------
+# Arbre de comportement
+# -------------------------------------------------------------
+bt_navigator:
+  ros__parameters:
+    use_sim_time: false
+    global_frame: map
+    robot_base_frame: base_link
+    odom_topic: /odom
+    bt_loop_duration: 10
+    default_server_timeout: 20
+
+# -------------------------------------------------------------
+# Controleur : Regulated Pure Pursuit
+#   Choisi plutot que DWB : beaucoup moins de gains a regler, et il
+#   ralentit tout seul dans les virages et pres des obstacles.
+# -------------------------------------------------------------
+controller_server:
+  ros__parameters:
+    use_sim_time: false
+    controller_frequency: 20.0
+
+    # Seuils sous lesquels le robot est considere a l'arret.
+    # Cales sur la resolution de mesure (0.0152 m/s) : en dessous,
+    # une roue immobile et une roue a 1 tick sont indistinguables.
+    min_x_velocity_threshold: 0.02
+    min_y_velocity_threshold: 0.5      # robot non holonome : jamais de vy
+    min_theta_velocity_threshold: 0.05
+
+    failure_tolerance: 0.3
+
+    # IMPORTANT (Jazzy) : odom_node.py souscrit a geometry_msgs/Twist.
+    # Si un jour tu passes a TwistStamped, il faut basculer ce flag ici
+    # ET dans velocity_smoother, ET adapter odom_node.py.
+    enable_stamped_cmd_vel: false
+
+    progress_checker_plugin: "progress_checker"
+    goal_checker_plugins: ["goal_checker"]
+    controller_plugins: ["FollowPath"]
+
+    progress_checker:
+      plugin: "nav2_controller::SimpleProgressChecker"
+      required_movement_radius: 0.5
+      movement_time_allowance: 15.0    # genereux : le robot est lent
+
+    goal_checker:
+      plugin: "nav2_controller::SimpleGoalChecker"
+      xy_goal_tolerance: 0.10          # 10 cm : coherent avec la derive
+      yaw_goal_tolerance: 0.20         # ~11 deg
+      stateful: true
+
+    FollowPath:
+      plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
+
+      # --- Vitesses ---
+      desired_linear_vel: 0.20
+      min_approach_linear_velocity: 0.05     # au-dessus de la zone morte
+      max_angular_accel: 1.5
+      max_robot_pose_search_dist: 5.0
+
+      # --- Lookahead ---
+      # Regle empirique : ~2-3 s de trajet a vitesse nominale.
+      # 0.20 m/s * 2.5 s = 0.50 m
+      lookahead_dist: 0.50
+      min_lookahead_dist: 0.30
+      max_lookahead_dist: 0.80
+      use_velocity_scaled_lookahead_dist: true
+      lookahead_time: 2.5
+
+      # --- Regulation ---
+      use_regulated_linear_velocity_scaling: true
+      regulated_linear_scaling_min_radius: 0.90
+      regulated_linear_scaling_min_speed: 0.08
+
+      use_cost_regulated_linear_velocity_scaling: true
+      cost_scaling_dist: 0.40
+      cost_scaling_gain: 1.0
+      inflation_cost_scaling_factor: 3.0     # doit matcher l'InflationLayer
+
+      # --- Rotation sur place ---
+      # 0.8 rad/s -> 0.092 m/s par roue : dans le domaine valide.
+      use_rotate_to_heading: true
+      rotate_to_heading_min_angle: 0.785     # 45 deg
+      rotate_to_heading_angular_vel: 0.8
+
+      # --- Marche arriere ---
+      # Desactivee : aucun capteur oriente vers l'arriere.
+      allow_reversing: false
+
+      approach_velocity_scaling_dist: 0.6
+      transform_tolerance: 0.2
+
+# -------------------------------------------------------------
+# Costmap local (fenetre glissante autour du robot)
+# -------------------------------------------------------------
+local_costmap:
+  local_costmap:
+    ros__parameters:
+      use_sim_time: false
+      update_frequency: 5.0
+      publish_frequency: 2.0
+      global_frame: odom
+      robot_base_frame: base_link
+
+      rolling_window: true
+      width: 3
+      height: 3
+      resolution: 0.05
+
+      # Cercle circonscrit au chassis 300x250.
+      # /!\ Suppose base_link au centre geometrique. Si l'essieu est
+      # decentre, augmenter (0.25) ou passer a un footprint polygonal.
+      robot_radius: 0.20
+
+      plugins: ["obstacle_layer", "inflation_layer"]
+
+      obstacle_layer:
+        plugin: "nav2_costmap_2d::ObstacleLayer"
+        enabled: true
+        observation_sources: scan
+        scan:
+          topic: /scan                  # RPLIDAR A2M8, ~12 Hz
+          sensor_frame: laser
+          data_type: "LaserScan"
+          clearing: true
+          marking: true
+          max_obstacle_height: 2.0
+          obstacle_max_range: 3.0
+          obstacle_min_range: 0.15      # ignore le chassis lui-meme
+          raytrace_max_range: 3.5
+          raytrace_min_range: 0.0
+          inf_is_valid: false
+
+      inflation_layer:
+        plugin: "nav2_costmap_2d::InflationLayer"
+        enabled: true
+        # 0.20 (rayon) + 0.15 (marge) = 0.35
+        inflation_radius: 0.35
+        cost_scaling_factor: 3.0
+
+      always_send_full_costmap: true
+
+# -------------------------------------------------------------
+# Costmap global
+# -------------------------------------------------------------
+global_costmap:
+  global_costmap:
+    ros__parameters:
+      use_sim_time: false
+      update_frequency: 1.0
+      publish_frequency: 1.0
+      global_frame: map
+      robot_base_frame: base_link
+      resolution: 0.05
+      track_unknown_space: true
+
+      robot_radius: 0.20
+
+      plugins: ["static_layer", "obstacle_layer", "inflation_layer"]
+
+      static_layer:
+        plugin: "nav2_costmap_2d::StaticLayer"
+        map_subscribe_transient_local: true
+        enabled: true
+
+      obstacle_layer:
+        plugin: "nav2_costmap_2d::ObstacleLayer"
+        enabled: true
+        observation_sources: scan
+        scan:
+          topic: /scan
+          sensor_frame: laser
+          data_type: "LaserScan"
+          clearing: true
+          marking: true
+          max_obstacle_height: 2.0
+          obstacle_max_range: 3.0
+          obstacle_min_range: 0.15
+          raytrace_max_range: 3.5
+          raytrace_min_range: 0.0
+          inf_is_valid: false
+
+      inflation_layer:
+        plugin: "nav2_costmap_2d::InflationLayer"
+        enabled: true
+        inflation_radius: 0.35
+        cost_scaling_factor: 3.0
+
+      always_send_full_costmap: true
+
+# -------------------------------------------------------------
+# Planificateur global : NavFn (Dijkstra)
+# -------------------------------------------------------------
+planner_server:
+  ros__parameters:
+    use_sim_time: false
+    expected_planner_frequency: 1.0
+    planner_plugins: ["GridBased"]
+
+    GridBased:
+      plugin: "nav2_navfn_planner::NavfnPlanner"
+      tolerance: 0.25
+      use_astar: false
+      allow_unknown: true
+
+# -------------------------------------------------------------
+# Lissage de trajectoire
+# -------------------------------------------------------------
+smoother_server:
+  ros__parameters:
+    use_sim_time: false
+    smoother_plugins: ["simple_smoother"]
+    simple_smoother:
+      plugin: "nav2_smoother::SimpleSmoother"
+      tolerance: 1.0e-10
+      max_its: 1000
+      do_refinement: true
+
+# -------------------------------------------------------------
+# Comportements de recuperation
+#   backup / drive_on_heading RETIRES : pas de capteur arriere.
+#   Le robot reculerait a l'aveugle.
+# -------------------------------------------------------------
+behavior_server:
+  ros__parameters:
+    use_sim_time: false
+    local_costmap_topic: local_costmap/costmap_raw
+    global_costmap_topic: global_costmap/costmap_raw
+    local_frame: odom
+    global_frame: map
+    robot_base_frame: base_link
+    transform_tolerance: 0.2
+
+    behavior_plugins: ["spin", "backup", "drive_on_heading", "assisted_teleop", "wait"]
+    spin:
+      plugin: "nav2_behaviors::Spin"
+    backup:
+      plugin: "nav2_behaviors::BackUp"
+    drive_on_heading:
+      plugin: "nav2_behaviors::DriveOnHeading"
+    wait:
+      plugin: "nav2_behaviors::Wait"
+    assisted_teleop:
+      plugin: "nav2_behaviors::AssistedTeleop"
+
+    max_rotational_vel: 0.8
+    min_rotational_vel: 0.25
+    rotational_acc_lim: 1.5
+
+    enable_stamped_cmd_vel: false
+
+# -------------------------------------------------------------
+# Lisseur de vitesse : derniere barriere avant la base moteur.
+#   C'est ici que les limites physiques sont VRAIMENT appliquees.
+# -------------------------------------------------------------
+velocity_smoother:
+  ros__parameters:
+    use_sim_time: false
+    smoothing_frequency: 20.0
+    scale_velocities: false
+    feedback: "OPEN_LOOP"
+
+    # Ordre : [x, y, theta]
+    max_velocity: [0.20, 0.0, 1.0]
+    min_velocity: [-0.20, 0.0, -1.0]
+
+    # Acceleration : 0.20 m/s atteint en ~0.4 s.
+    # Volontairement doux -> menage le pont en H et les connecteurs.
+    max_accel: [0.5, 0.0, 2.0]
+    max_decel: [-0.5, 0.0, -2.0]
+
+    odom_topic: "/odom"
+    odom_duration: 0.1
+
+    # Zone morte mesuree (FF_OFFSET = 9.0 dans le firmware).
+    # En dessous, les moteurs ne demarrent pas franchement.
+    deadband_velocity: [0.05, 0.0, 0.15]
+    velocity_timeout: 1.0
+
+    enable_stamped_cmd_vel: false
+
+# -------------------------------------------------------------
+# AMCL : inutilise tant qu'on est en SLAM live.
+#   A activer avec la carte pre-construite de la table de competition.
+# -------------------------------------------------------------
+amcl:
+  ros__parameters:
+    use_sim_time: false
+    base_frame_id: "base_link"
+    odom_frame_id: "odom"
+    global_frame_id: "map"
+    scan_topic: /scan
+
+    # Modele differentiel corrige (recommande pour diff-drive).
+    robot_model_type: "nav2_amcl::DifferentialMotionModel"
+
+    # Bruit d'odometrie. Valeurs de depart, a affiner apres
+    # caracterisation de la derive reelle sur la table.
+    alpha1: 0.2   # rotation -> rotation
+    alpha2: 0.2   # translation -> rotation
+    alpha3: 0.2   # translation -> translation
+    alpha4: 0.2   # rotation -> translation
+    alpha5: 0.2
+
+    min_particles: 500
+    max_particles: 2000
+    update_min_d: 0.10
+    update_min_a: 0.20
+    resample_interval: 1
+    transform_tolerance: 0.5
+
+    laser_max_range: 12.0
+    laser_min_range: 0.15
+    max_beams: 60
+    laser_model_type: "likelihood_field"
+    z_hit: 0.5
+    z_rand: 0.5
+    sigma_hit: 0.2
+    laser_likelihood_max_dist: 2.0
+
+    set_initial_pose: false
+    always_reset_initial_pose: false
+
+# -------------------------------------------------------------
+# Collision Monitor : filet de securite en aval du controleur.
+#   Intercepte cmd_vel_smoothed -> cmd_vel et coupe si obstacle proche.
+#   Independant de Nav2 : agit meme si le controleur se trompe.
+# -------------------------------------------------------------
+collision_monitor:
+  ros__parameters:
+    use_sim_time: false
+    base_frame_id: "base_link"
+    odom_frame_id: "odom"
+
+    # Chaine : velocity_smoother -> collision_monitor -> odom_node
+    cmd_vel_in_topic: "cmd_vel_smoothed"
+    cmd_vel_out_topic: "cmd_vel"
+    state_topic: "collision_monitor_state"
+
+    transform_tolerance: 0.5
+    source_timeout: 1.0
+    base_shift_correction: true
+    stop_pub_timeout: 2.0
+
+    polygons: ["FootprintApproach"]
+
+    FootprintApproach:
+      type: "polygon"
+      action_type: "approach"
+      # Projette l'empreinte le long de la trajectoire prevue.
+      # 1.2 s a 0.20 m/s = 24 cm d'anticipation.
+      footprint_topic: "/local_costmap/published_footprint"
+      time_before_collision: 1.2
+      simulation_time_step: 0.1
+      min_points: 6
+      visualize: true
+      enabled: true
+
+    observation_sources: ["scan"]
+    scan:
+      type: "scan"
+      topic: "/scan"
+      min_height: 0.0
+      max_height: 0.5
+      enabled: true
+
+# -------------------------------------------------------------
+# Docking server : accostage sur station de recharge.
+#   INUTILISE sur ce robot, mais navigation_launch.py de Jazzy le
+#   lance en dur et le lifecycle_manager avorte s'il ne s'active pas.
+#   Bloc minimal pour le satisfaire.
+# -------------------------------------------------------------
+docking_server:
+  ros__parameters:
+    use_sim_time: false
+    controller_frequency: 10.0
+    dock_plugins: ['nova_carter_dock']
+    nova_carter_dock:
+      plugin: 'opennav_docking::SimpleChargingDock'
+      dock_frame: 'dock'
+    docks: ['home_dock']
+    home_dock:
+      type: 'nova_carter_dock'
+      frame: map
+      pose: [0.0, 0.0, 0.0]
