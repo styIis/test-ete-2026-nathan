@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """
-Noeud d'odometrie : lit les trames '#O x y th v w' du Nucleo
-et publie /odom + le TF odom -> base_link.
+Pont ROS 2 <-> carte moteur ESP32 (firmware carte_moteur_nav.ino).
 
-Le firmware envoie a 10 Hz apres reception de 'S 1'.
-Lecture seule pour l'instant : pas de /cmd_vel.
+ - lit les trames '#O x y th v w' (10 Hz apres 'S 1') -> /odom + TF odom -> base_link
+ - /cmd_vel (Twist) -> 'C v w' a 10 Hz
+ - lit les trames '#F av ar' (flags des Sharp, via le CAN) -> /obstacle_ir (Bool)
+ - /actionneur (std_msgs/UInt16, ex. 0x70) -> 'A 70' : la carte moteur relaie
+   l'ordre sur le CAN vers la carte actionneur (ventouse / ascenseur)
+   ex : ros2 topic pub --once /actionneur std_msgs/msg/UInt16 "{data: 112}"   # 0x70
 """
 
 import math
@@ -16,6 +19,7 @@ from geometry_msgs.msg import TransformStamped, Quaternion
 from tf2_ros import TransformBroadcaster
 from std_srvs.srv import Trigger
 from geometry_msgs.msg import Twist
+from std_msgs.msg import Bool, UInt16
 
 
 def yaw_to_quaternion(yaw):
@@ -30,10 +34,17 @@ class OdomNode(Node):
     def __init__(self):
         super().__init__('odom_node')
 
-        self.declare_parameter('port', '/dev/ttyACM0')
+        self.declare_parameter('port', '/dev/esp32')
         self.declare_parameter('baudrate', 115200)
         self.declare_parameter('odom_frame', 'odom')
         self.declare_parameter('base_frame', 'base_link')
+        # Rustine du robot d'ete (moteurs qui ne demarraient pas sous ces vitesses).
+        # Sur ce robot la zone morte est compensee dans le firmware : 0 = desactive.
+        # Si le robot "cale" a basse vitesse, essayer v_min 0.08 / w_min 0.5.
+        self.declare_parameter('v_min', 0.0)    # m/s
+        self.declare_parameter('w_min', 0.0)    # rad/s (rotation pure)
+        self.v_min = self.get_parameter('v_min').value
+        self.w_min = self.get_parameter('w_min').value
 
         port = self.get_parameter('port').value
         baud = self.get_parameter('baudrate').value
@@ -46,8 +57,8 @@ class OdomNode(Node):
             self.get_logger().error(f"Ouverture de {port} impossible : {e}")
             raise
 
-        # Le Nucleo redemarre souvent quand le port s'ouvre (DTR).
-        self.get_logger().info("Attente du demarrage du Nucleo...")
+        # L'ESP32 redemarre quand le port s'ouvre (DTR/RTS) : on attend.
+        self.get_logger().info("Attente du demarrage de la carte moteur...")
         self.create_timer(2.0, self._activer_flux)
         self._flux_actif = False
 
@@ -79,9 +90,25 @@ class OdomNode(Node):
             Twist, 'cmd_vel', self._cmd_vel, 10)
         self.create_timer(0.1, self._envoyer_consigne)   # 10 Hz
 
+        self.pub_ir = self.create_publisher(Bool, 'obstacle_ir', 10)
+        self.sub_act = self.create_subscription(
+            UInt16, 'actionneur', self._actionneur, 10)
+
+    def _actionneur(self, msg):
+        if not 0 < msg.data < 0x800:
+            self.get_logger().warn(f"id CAN invalide : {msg.data}")
+            return
+        self.get_logger().info(f"Ordre actionneur 0x{msg.data:X}")
+        try:
+            self.ser.write(f"A {msg.data:X}\n".encode('ascii'))
+        except serial.SerialException as e:
+            self.get_logger().warn(f"Ecriture serie impossible : {e}")
+
     def _cmd_vel(self, msg):
         self.cmd_v = max(-self.v_max, min(self.v_max, msg.linear.x))
         self.cmd_w = max(-self.w_max, min(self.w_max, msg.angular.z))
+        self.get_logger().info(f"/cmd_vel recu : {msg.linear.x:.2f} {msg.angular.z:.2f}",
+                               throttle_duration_sec=1.0)
         self.dernier_cmd = self.get_clock().now()
 
     def _envoyer_consigne(self):
@@ -90,18 +117,21 @@ class OdomNode(Node):
             v, w = 0.0, 0.0
         else:
             v, w = self.cmd_v, self.cmd_w
+            if 0.0 < abs(v) < self.v_min:
+                v = math.copysign(self.v_min, v)
+            if abs(v) < 1e-3 and 0.0 < abs(w) < self.w_min:
+                w = math.copysign(self.w_min, w)
         try:
             self.ser.write(f"C {v:.3f} {w:.3f}\n".encode('ascii'))
         except serial.SerialException as e:
             self.get_logger().warn(f"Ecriture serie impossible : {e}")
 
     def _activer_flux(self):
-        if self._flux_actif:
-            return
-        self.ser.reset_input_buffer()
+        if self.trames > 0:
+            return          # le flux arrive deja
+        self.ser.write(b'R\n')     # odometrie a zero a chaque lancement
         self.ser.write(b'S 1\n')
-        self._flux_actif = True
-        self.get_logger().info("Flux odometrie demande au Nucleo")
+        self.get_logger().info("Odometrie remise a zero, flux demande")
 
     def _lire_serie(self):
         while self.ser.in_waiting:
@@ -111,6 +141,13 @@ class OdomNode(Node):
                 self.get_logger().warn(f"Erreur de lecture : {e}")
                 return
 
+            if ligne.startswith('#F '):
+                champs = ligne.split()
+                if len(champs) >= 2:
+                    av = champs[1] == '1'
+                    self.pub_ir.publish(Bool(data=av))
+                    self.get_logger().info(f"Sharp avant : {'OBSTACLE' if av else 'libre'}")
+                continue
             if not ligne.startswith('#O '):
                 continue
 

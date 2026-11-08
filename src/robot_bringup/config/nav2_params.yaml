@@ -1,25 +1,26 @@
 # =============================================================
-#  nav2_params.yaml  --  Robot IUT GEII (base differentielle)
+#  nav2_params.yaml  --  Robot Coupe de France (cube 35 cm) -- salon IBT
 #  A placer dans : ~/ros2_ws/src/robot_bringup/config/
 # -------------------------------------------------------------
-#  CONTEXTE MATERIEL (mesure le 22/08/2026, prototype sur alim de banc)
-#    Chassis           : 300 x 250 x 100 mm (160 mm avec LiDAR/Nucleo)
-#    Entraxe roues     : 0.23 m
-#    Rayon roue        : 0.025 m
-#    Rayon circonscrit : sqrt(0.15^2 + 0.125^2) = 0.195 m -> arrondi 0.20
+#  GEOMETRIE (base_link = milieu de l'essieu des roues MOTRICES, au sol)
+#    Cube 35 x 35 cm. Roues motrices 11,5 cm en arriere du centre du cube.
+#      -> centre du cube a x = +0.115
+#      -> empreinte : x de -0.060 a +0.290, y de -0.175 a +0.175
+#    Rayon circonscrit (balaye en rotation sur place) :
+#      sqrt(0.29^2 + 0.175^2) = 0.339 m
+#    Rayon inscrit (vu depuis base_link) : 0.06 m seulement (cote arriere).
+#    => robot_radius ne convient plus : on utilise un footprint polygonal.
+#    Roues motrices D 70 mm, entraxe 0.15 m ; odometrie par roues de mesure
+#    SICK DBV50 (0,5 mm/tick en x2).
+#    LiDAR RPLIDAR A2M8 tete en bas, 6 cm devant le centre (x = 0.175),
+#    a ~3,5 cm du sol. Scan FILTRE (/scan_filtered, voir laser_filter.yaml).
 #
-#  VITESSES : valeurs volontairement conservatrices.
-#    Validees en translation jusqu'a 0.25 m/s commande (0.215 mesure).
-#    0.30 m/s NON TESTE : longueur de cable insuffisante.
-#    Rotation NON MESUREE : les cables s'enroulent avant la fin de l'essai.
-#    max_vel_theta est donc CALCULE, pas mesure :
-#      v_roue = omega * entraxe/2 = 1.0 * 0.115 = 0.115 m/s  -> dans le
-#      domaine valide en translation.
-#    A REVALIDER une fois le robot sur batterie (rentree IUT).
+#  VITESSES : valeurs de depart prudentes, a remonter une fois la regulation
+#  de la carte moteur reglee au sol (table 2 x 3 m : inutile d'aller vite).
 #
-#  RESOLUTION DE MESURE : 55 ticks/tour en decodage x1 => la vitesse
-#    mesuree est quantifiee par pas de 0.0152 m/s. min_vel_x doit rester
-#    nettement au-dessus, sinon le PID regule sur du bruit.
+#  Modifs par rapport a la version d'ete : footprint, /scan_filtered,
+#  inflation, vitesses mini (plus de zone morte grace au feedforward),
+#  progress_checker.
 # =============================================================
 
 # -------------------------------------------------------------
@@ -64,13 +65,13 @@ controller_server:
 
     progress_checker:
       plugin: "nav2_controller::SimpleProgressChecker"
-      required_movement_radius: 0.5
-      movement_time_allowance: 15.0    # genereux : le robot est lent
+      required_movement_radius: 0.25   # table 2 x 3 m : petits deplacements
+      movement_time_allowance: 15.0
 
     goal_checker:
       plugin: "nav2_controller::SimpleGoalChecker"
-      xy_goal_tolerance: 0.10          # 10 cm : coherent avec la derive
-      yaw_goal_tolerance: 0.20         # ~11 deg
+      xy_goal_tolerance: 0.08
+      yaw_goal_tolerance: 0.15         # ~9 deg
       stateful: true
 
     FollowPath:
@@ -78,34 +79,37 @@ controller_server:
 
       # --- Vitesses ---
       desired_linear_vel: 0.20
-      min_approach_linear_velocity: 0.05     # au-dessus de la zone morte
-      max_angular_accel: 1.5
+      min_approach_linear_velocity: 0.08     # plus de zone morte : feedforward dans la carte moteur
+      max_angular_accel: 4.0
       max_robot_pose_search_dist: 5.0
 
       # --- Lookahead ---
       # Regle empirique : ~2-3 s de trajet a vitesse nominale.
-      # 0.20 m/s * 2.5 s = 0.50 m
-      lookahead_dist: 0.50
-      min_lookahead_dist: 0.30
+      lookahead_dist: 0.45
+      min_lookahead_dist: 0.25
       max_lookahead_dist: 0.80
       use_velocity_scaled_lookahead_dist: true
-      lookahead_time: 2.5
+      lookahead_time: 2.0
 
       # --- Regulation ---
       use_regulated_linear_velocity_scaling: true
       regulated_linear_scaling_min_radius: 0.90
-      regulated_linear_scaling_min_speed: 0.08
+      regulated_linear_scaling_min_speed: 0.10
 
       use_cost_regulated_linear_velocity_scaling: true
       cost_scaling_dist: 0.40
       cost_scaling_gain: 1.0
-      inflation_cost_scaling_factor: 3.0     # doit matcher l'InflationLayer
+      inflation_cost_scaling_factor: 10.0     # doit matcher l'InflationLayer
+
+      # Verification de collision avec le FOOTPRINT le long de la trajectoire
+      use_collision_detection: true
+      max_allowed_time_to_collision_up_to_carrot: 1.0
 
       # --- Rotation sur place ---
-      # 0.8 rad/s -> 0.092 m/s par roue : dans le domaine valide.
+      # /!\ le robot pivote autour de l'essieu ARRIERE : l'avant balaie 34 cm.
       use_rotate_to_heading: true
       rotate_to_heading_min_angle: 0.785     # 45 deg
-      rotate_to_heading_angular_vel: 0.8
+      rotate_to_heading_angular_vel: 1.2
 
       # --- Marche arriere ---
       # Desactivee : aucun capteur oriente vers l'arriere.
@@ -131,10 +135,9 @@ local_costmap:
       height: 3
       resolution: 0.05
 
-      # Cercle circonscrit au chassis 300x250.
-      # /!\ Suppose base_link au centre geometrique. Si l'essieu est
-      # decentre, augmenter (0.25) ou passer a un footprint polygonal.
-      robot_radius: 0.20
+      # Empreinte 35 x 35 cm, essieu 11,5 cm en arriere du centre (voir en-tete)
+      footprint: "[[0.29, 0.175], [0.29, -0.175], [-0.06, -0.175], [-0.06, 0.175]]"
+      footprint_padding: 0.01
 
       plugins: ["obstacle_layer", "inflation_layer"]
 
@@ -143,14 +146,14 @@ local_costmap:
         enabled: true
         observation_sources: scan
         scan:
-          topic: /scan                  # RPLIDAR A2M8, ~12 Hz
+          topic: /scan_filtered         # RPLIDAR A2M8 filtre (sans le robot)
           sensor_frame: laser
           data_type: "LaserScan"
           clearing: true
           marking: true
           max_obstacle_height: 2.0
           obstacle_max_range: 3.0
-          obstacle_min_range: 0.15      # ignore le chassis lui-meme
+          obstacle_min_range: 0.05      # le chassis est retire par laser_filter
           raytrace_max_range: 3.5
           raytrace_min_range: 0.0
           inf_is_valid: false
@@ -158,9 +161,10 @@ local_costmap:
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         enabled: true
-        # 0.20 (rayon) + 0.15 (marge) = 0.35
-        inflation_radius: 0.35
-        cost_scaling_factor: 3.0
+        # >= rayon circonscrit (0.34) : NavFn planifie pour un POINT (base_link),
+        # c'est l'inflation qui l'oblige a laisser la place a l'avant du robot.
+        inflation_radius: 0.45
+        cost_scaling_factor: 10.0
 
       always_send_full_costmap: true
 
@@ -171,14 +175,15 @@ global_costmap:
   global_costmap:
     ros__parameters:
       use_sim_time: false
-      update_frequency: 1.0
+      update_frequency: 5.0
       publish_frequency: 1.0
       global_frame: map
       robot_base_frame: base_link
       resolution: 0.05
       track_unknown_space: true
 
-      robot_radius: 0.20
+      footprint: "[[0.29, 0.175], [0.29, -0.175], [-0.06, -0.175], [-0.06, 0.175]]"
+      footprint_padding: 0.01
 
       plugins: ["static_layer", "obstacle_layer", "inflation_layer"]
 
@@ -192,14 +197,14 @@ global_costmap:
         enabled: true
         observation_sources: scan
         scan:
-          topic: /scan
+          topic: /scan_filtered
           sensor_frame: laser
           data_type: "LaserScan"
           clearing: true
           marking: true
           max_obstacle_height: 2.0
           obstacle_max_range: 3.0
-          obstacle_min_range: 0.15
+          obstacle_min_range: 0.05
           raytrace_max_range: 3.5
           raytrace_min_range: 0.0
           inf_is_valid: false
@@ -207,8 +212,8 @@ global_costmap:
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         enabled: true
-        inflation_radius: 0.35
-        cost_scaling_factor: 3.0
+        inflation_radius: 0.45
+        cost_scaling_factor: 4.0
 
       always_send_full_costmap: true
 
@@ -267,9 +272,9 @@ behavior_server:
     assisted_teleop:
       plugin: "nav2_behaviors::AssistedTeleop"
 
-    max_rotational_vel: 0.8
-    min_rotational_vel: 0.25
-    rotational_acc_lim: 1.5
+    max_rotational_vel: 1.5
+    min_rotational_vel: 0.4
+    rotational_acc_lim: 4.0
 
     enable_stamped_cmd_vel: false
 
@@ -285,20 +290,19 @@ velocity_smoother:
     feedback: "OPEN_LOOP"
 
     # Ordre : [x, y, theta]
-    max_velocity: [0.20, 0.0, 1.0]
-    min_velocity: [-0.20, 0.0, -1.0]
+    max_velocity: [0.22, 0.0, 1.5]        # velocity_smoother
+    min_velocity: [-0.22, 0.0, -1.5]
 
     # Acceleration : 0.20 m/s atteint en ~0.4 s.
     # Volontairement doux -> menage le pont en H et les connecteurs.
-    max_accel: [0.5, 0.0, 2.0]
-    max_decel: [-0.5, 0.0, -2.0]
+    max_accel: [0.8, 0.0, 6.0]
+    max_decel: [-0.8, 0.0, -6.0]
 
     odom_topic: "/odom"
     odom_duration: 0.1
 
-    # Zone morte mesuree (FF_OFFSET = 9.0 dans le firmware).
-    # En dessous, les moteurs ne demarrent pas franchement.
-    deadband_velocity: [0.05, 0.0, 0.15]
+    # La zone morte des moteurs est compensee dans la carte moteur (FF_OFFSET).
+    deadband_velocity: [0.0, 0.0, 0.0]
     velocity_timeout: 1.0
 
     enable_stamped_cmd_vel: false
@@ -313,7 +317,7 @@ amcl:
     base_frame_id: "base_link"
     odom_frame_id: "odom"
     global_frame_id: "map"
-    scan_topic: /scan
+    scan_topic: /scan_filtered
 
     # Modele differentiel corrige (recommande pour diff-drive).
     robot_model_type: "nav2_amcl::DifferentialMotionModel"
@@ -334,7 +338,7 @@ amcl:
     transform_tolerance: 0.5
 
     laser_max_range: 12.0
-    laser_min_range: 0.15
+    laser_min_range: 0.05
     max_beams: 60
     laser_model_type: "likelihood_field"
     z_hit: 0.5
@@ -372,7 +376,8 @@ collision_monitor:
       type: "polygon"
       action_type: "approach"
       # Projette l'empreinte le long de la trajectoire prevue.
-      # 1.2 s a 0.20 m/s = 24 cm d'anticipation.
+      # 1.2 s a 0.25 m/s = 30 cm d'anticipation. Utilise le footprint publie
+      # par la costmap locale (donc la nouvelle empreinte 35 cm).
       footprint_topic: "/local_costmap/published_footprint"
       time_before_collision: 1.2
       simulation_time_step: 0.1
@@ -383,7 +388,7 @@ collision_monitor:
     observation_sources: ["scan"]
     scan:
       type: "scan"
-      topic: "/scan"
+      topic: "/scan_filtered"   # IMPERATIF : sinon les roues vues par le lidar = collision permanente
       min_height: 0.0
       max_height: 0.5
       enabled: true

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import os
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
 from launch.conditions import IfCondition
@@ -70,7 +71,7 @@ def generate_launch_description():
         name='odom_node',
         output='screen',
         parameters=[{
-            'port': '/dev/nucleo',
+            'port': '/dev/esp32',
             'baudrate': 115200,
         }],
         condition=IfCondition(LaunchConfiguration('odom')),
@@ -89,24 +90,20 @@ def generate_launch_description():
         condition=UnlessCondition(LaunchConfiguration('odom')),
     )
 
-    # 3. TF statique : base_link -> laser
-    #    x    = +0.08 m  (LiDAR avance par rapport au centre de l'essieu)
-    #    y    = -0.075 m (decale a DROITE : coin avant-droit du chassis)
-    #    z    = +0.16 m  (surelevé pour degager le champ du chassis)
-    #    yaw  = 3.14159 rad (180 deg) : le zero du RPLIDAR pointe vers
-    #           l'ARRIERE du robot. Mesure le 22/08/2026 par point-picking
-    #           (objet devant : -177.7 / -177.0 / -179.7 deg).
-    #           C'est l'ex-ANGLE_OFFSET d'obstacle_detector.py, desormais
-    #           porte par la TF -- meme logique que le noeud 9 pour le LD06.
-    #    A RAFFINER : mesure au mur plat (bien plus precise) avant de
-    #           construire la carte de competition.
+    # 3. TF statique : base_link -> laser (robot CdF 35 cm)
+    #    base_link = milieu de l'essieu des roues motrices, au sol
+    #    x    = 0.175 m (centre du cube a +0.115, lidar 6 cm devant le centre)
+    #    z    = 0.035 m (lidar a ~3,5 cm du sol)
+    #    roll = pi : lidar monte TETE EN BAS
+    #    yaw  = pi : le zero du RPLIDAR pointe vers l'arriere (comme cet ete)
+    #    A VERIFIER : objet devant-gauche -> doit apparaitre devant-gauche dans Foxglove
     tf_base_laser = Node(
         package='tf2_ros',
         executable='static_transform_publisher',
         name='tf_base_link_laser',
         arguments=[
-            '--x', '0.08', '--y', '-0.075', '--z', '0.16',
-            '--roll', '0', '--pitch', '0', '--yaw', '3.14159',
+            '--x', '0.175', '--y', '0', '--z', '0.035',
+            '--roll', '3.14159', '--pitch', '0', '--yaw', '3.14159',
             '--frame-id', 'base_link', '--child-frame-id', 'laser',
         ],
     )
@@ -191,6 +188,16 @@ def generate_launch_description():
         ],
     )
 
+    laser_filter = Node(
+        package='laser_filters',
+        executable='scan_to_scan_filter_chain',
+        name='laser_filter',
+        parameters=[PathJoinSubstitution([
+            FindPackageShare('robot_bringup'),
+            'config', 'laser_filter.yaml',
+        ])],
+    )
+
     # 10. Detection des adversaires (optionnel) : /scan_high -> /opponents
     opponent_detector = Node(
         package='robot_bringup',
@@ -226,4 +233,5 @@ def generate_launch_description():
         ld06,
         tf_base_laser_high,
         opponent_detector,
+        laser_filter,
     ])  

@@ -1,0 +1,30 @@
+# =============================================================
+#  laser_filter.yaml -- retire du scan les points qui tombent SUR le robot
+#  A placer dans : ~/ros2_ws/src/robot_bringup/config/
+#  Paquet : sudo apt install ros-jazzy-laser-filters
+#
+#  Pourquoi : le lidar est a 3-4 cm du sol, a l'interieur du chassis. Il voit
+#  les roues motrices, leurs moteurs et le bas de l'ascenseur. Sans filtre :
+#    - la costmap met des obstacles DANS le robot,
+#    - le collision_monitor croit a une collision permanente -> robot immobile.
+#
+#  Entree : /scan   Sortie : /scan_filtered (a utiliser partout : costmaps,
+#  collision_monitor, slam_toolbox, amcl).
+#
+#  Boite = empreinte du robot (35 x 35 cm, base_link au milieu des roues
+#  motrices, donc x de -0.06 a +0.29) + 2 cm de marge.
+# =============================================================
+/**:
+  ros__parameters:
+    filter1:
+      name: robot_box
+      type: laser_filters/LaserScanBoxFilter
+      params:
+        box_frame: base_link
+        min_x: -0.08
+        max_x: 0.31
+        min_y: -0.195
+        max_y: 0.195
+        min_z: -0.5
+        max_z: 0.5
+        invert: false   # false = on SUPPRIME ce qui est dans la boite

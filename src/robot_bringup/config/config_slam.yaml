@@ -7,11 +7,11 @@ slam_toolbox:
     ceres_dogleg_type: TRADITIONAL_DOGLEG
     ceres_loss_function: None
 
-    # Repères et topic — DOIVENT correspondre à ton arbre TF
+    # Repères et topic — DOIVENT correspondre à l'arbre TF
     odom_frame: odom
     map_frame: map
     base_frame: base_link
-    scan_topic: /scan
+    scan_topic: /scan_filtered
     use_sim_time: false
 
     mode: mapping
