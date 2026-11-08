@@ -33,6 +33,7 @@ install(PROGRAMS
   scripts/nucleo_bridge.py
   scripts/opponent_detector.py
   scripts/odom_node.py
+  scripts/aruco_pose.py
   scripts/aruco_detector.py
   DESTINATION lib/${PROJECT_NAME}
 )

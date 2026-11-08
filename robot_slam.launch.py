@@ -84,6 +84,21 @@ def generate_launch_description():
         condition=IfCondition(LaunchConfiguration('foxglove')),
     )
 
+    tf_base_camera = Node(
+        package='tf2_ros', executable='static_transform_publisher',
+        name='tf_base_link_camera',
+        arguments=['--x', '0.255', '--y', '0', '--z', '0.34',
+                   '--roll', '0', '--pitch', '0.1745', '--yaw', '0',
+                   '--frame-id', 'base_link', '--child-frame-id', 'camera_link'],
+    )
+    tf_camera_optical = Node(
+        package='tf2_ros', executable='static_transform_publisher',
+        name='tf_camera_optical',
+        arguments=['--x', '0', '--y', '0', '--z', '0',
+                   '--roll', '-1.5708', '--pitch', '0', '--yaw', '-1.5708',
+                   '--frame-id', 'camera_link', '--child-frame-id', 'camera_optical'],
+    )
+
     return LaunchDescription([
         foxglove_arg,
         lidar,
@@ -91,4 +106,6 @@ def generate_launch_description():
         tf_base_laser,
         slam,
         foxglove,
+        tf_base_camera,
+        tf_camera_optical,
     ])
