@@ -35,6 +35,7 @@ install(PROGRAMS
   scripts/odom_node.py
   scripts/aruco_pose.py
   scripts/aruco_detector.py
+  scripts/mission_brique.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

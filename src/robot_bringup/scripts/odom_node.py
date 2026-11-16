@@ -5,6 +5,8 @@ Pont ROS 2 <-> carte moteur ESP32 (firmware carte_moteur_nav.ino).
  - lit les trames '#O x y th v w' (10 Hz apres 'S 1') -> /odom + TF odom -> base_link
  - /cmd_vel (Twist) -> 'C v w' a 10 Hz
  - lit les trames '#F av ar' (flags des Sharp, via le CAN) -> /obstacle_ir (Bool)
+ - lit les trames '#C <id hex>' (messages CAN de la carte actionneur, ex. 71 =
+   prise terminee, 81 = depose terminee) -> /actionneur_retour (UInt16)
  - /actionneur (std_msgs/UInt16, ex. 0x70) -> 'A 70' : la carte moteur relaie
    l'ordre sur le CAN vers la carte actionneur (ventouse / ascenseur)
    ex : ros2 topic pub --once /actionneur std_msgs/msg/UInt16 "{data: 112}"   # 0x70
@@ -91,6 +93,7 @@ class OdomNode(Node):
         self.create_timer(0.1, self._envoyer_consigne)   # 10 Hz
 
         self.pub_ir = self.create_publisher(Bool, 'obstacle_ir', 10)
+        self.pub_retour = self.create_publisher(UInt16, 'actionneur_retour', 10)
         self.sub_act = self.create_subscription(
             UInt16, 'actionneur', self._actionneur, 10)
 
@@ -130,7 +133,7 @@ class OdomNode(Node):
         if self.trames > 0:
             return          # le flux arrive deja
         self.ser.write(b'R\n')     # odometrie a zero a chaque lancement
-        self.ser.write(b'S 1\n')
+        self.ser.write(b'S 1\n')   # renvoye toutes les 2 s tant que rien n'arrive
         self.get_logger().info("Odometrie remise a zero, flux demande")
 
     def _lire_serie(self):
@@ -147,6 +150,14 @@ class OdomNode(Node):
                     av = champs[1] == '1'
                     self.pub_ir.publish(Bool(data=av))
                     self.get_logger().info(f"Sharp avant : {'OBSTACLE' if av else 'libre'}")
+                continue
+            if ligne.startswith('#C '):
+                try:
+                    ident = int(ligne.split()[1], 16)
+                    self.pub_retour.publish(UInt16(data=ident))
+                    self.get_logger().info(f"Retour actionneur 0x{ident:X}")
+                except (IndexError, ValueError):
+                    pass
                 continue
             if not ligne.startswith('#O '):
                 continue
