@@ -34,7 +34,7 @@ def yaw_from_quat(q):
 class SquareTest(Node):
     def __init__(self):
         super().__init__('square_test')
-        self.declare_parameter('side', 0.5)          # m
+        self.declare_parameter('side', 0.1)          # m
         self.declare_parameter('mode', 'strafe')     # strafe | turn
         self.declare_parameter('speed', 0.15)        # m/s max en translation
         self.declare_parameter('w_max', 0.6)         # rad/s max en rotation
